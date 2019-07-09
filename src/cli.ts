@@ -7,7 +7,8 @@ import webpack from 'webpack';
 import puppeteer from 'puppeteer';
 import chalk from 'chalk';
 import findUp from 'find-up';
-import { runTests } from './run-tests';
+import { buildAndServe } from './build-and-serve';
+import { launchPage, listenToTests, IMochaStatus } from './launch-page';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version, description } = require('../package.json');
@@ -19,7 +20,8 @@ program
     .description(description)
     .usage('[options] <glob ...>')
     .option('-c, --webpack-config <config file>', 'webpack configuration file to bundle with')
-    .option('-d, --dev', 'never-closed, non-headless, open-devtools, html-reporter session')
+    .option('-d, --dev', 'avoids single run, and sets mocha to html reporter')
+    .option('-b, --browser', 'launches browser (false by default with --dev)')
     .option('-l, --list-files', 'list found test files')
     .option('-t, --timeout <ms>', 'mocha timeout in ms', 2000)
     .option('-p, --port <number>', 'port to start the http server with', 3000)
@@ -40,26 +42,26 @@ const {
     port: preferredPort
 } = program;
 
-const foundFiles: string[] = [];
+const testFiles: string[] = [];
 for (const arg of args) {
-    for (const foundFile of glob.sync(arg, { absolute: true })) {
-        foundFiles.push(foundFile);
+    for (const foundFile of glob.sync(arg, { absolute: true }).map(path.normalize)) {
+        testFiles.push(foundFile);
     }
 }
 
-const { length: numFound } = foundFiles;
+const { length: numFound } = testFiles;
 if (numFound === 0) {
     printErrorAndExit(chalk.red(`Cannot find any test files`));
 }
 
 console.log(`Found ${numFound} test files in ${process.cwd()}`);
 if (listFiles) {
-    for (const foundFile of foundFiles) {
+    for (const foundFile of testFiles) {
         console.log(`- ${foundFile}`);
     }
 }
 
-const puppeteerConfig: puppeteer.LaunchOptions = dev
+const launchOptions: puppeteer.LaunchOptions = dev
     ? { defaultViewport: null, devtools: true }
     : { defaultViewport: { width: 1024, height: 768 } };
 
@@ -71,16 +73,61 @@ if (typeof webpackConfig === 'function') {
 
 const defaultReporter = dev ? 'html' : 'spec';
 
-runTests(foundFiles, {
-    preferredPort,
-    webpackConfig,
-    puppeteerConfig,
-    keepOpen: dev,
-    colors: colors === undefined ? !!chalk.supportsColor : colors,
-    reporter: reporter || defaultReporter,
-    timeout,
-    ui
-}).catch(printErrorAndExit);
+async function main() {
+    const closables: Array<() => Promise<unknown>> = [];
+    try {
+        const { close: closeServer, compiler, port } = await buildAndServe({
+            preferredPort,
+            webpackConfig,
+            colors: colors === undefined ? !!chalk.supportsColor : colors,
+            reporter: reporter || defaultReporter,
+            timeout,
+            ui,
+            testFiles
+        });
+        closables.push(closeServer);
+
+        compiler.hooks.watchRun.tap('mocha-pup', () => console.log('Bundling using webpack...'));
+        compiler.hooks.done.tap('mocha-pup', stats => {
+            if (stats.hasErrors() || stats.hasWarnings()) {
+                console.log(stats.toString());
+            }
+            console.log('Done bundling.');
+        });
+
+        await new Promise((res, rej) => {
+            compiler.hooks.done.tap('mocha-pup-first-build', stats => {
+                if (stats.hasErrors() && !dev) {
+                    rej(stats.toString());
+                } else {
+                    res();
+                }
+            });
+        });
+
+        const { close: closeClient, page } = await launchPage(launchOptions);
+        closables.push(closeClient);
+        const onPageCrash = new Promise<IMochaStatus>((_res, rej) => page.once('error', rej));
+        const onUncaughtPageException = new Promise<IMochaStatus>((_res, rej) => page.once('pageerror', rej));
+
+        await page.goto(`http://localhost:${port}/mocha.html`);
+        const { failed } = await Promise.race([listenToTests(page), onPageCrash, onUncaughtPageException]);
+        if (!dev && failed) {
+            // tslint:disable-next-line: no-string-throw
+            throw `${failed} tests failed!`;
+        }
+    } catch (e) {
+        printErrorAndExit(e);
+    } finally {
+        if (!dev) {
+            for (const close of closables) {
+                await close();
+            }
+            closables.length = 0;
+        }
+    }
+}
+main();
 
 function printErrorAndExit(message: unknown) {
     console.error(message);
