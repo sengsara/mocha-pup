@@ -10,7 +10,7 @@
   "scripts": {
     "clean": "rimraf ./cjs",
     "prebuild": "yarn clean",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p ./tsconfig.build.json",
     "pretest": "yarn typecheck && yarn lint",
     "test": "mocha \"./test/**/*.spec.ts\"",
     "lint": "eslint . --ext .ts,.tsx -f codeframe",
