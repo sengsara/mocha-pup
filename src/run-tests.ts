@@ -65,7 +65,7 @@ export async function runTests(testFiles: string[], options: IRunTestsOptions = 
         if (webpackStats.hasErrors()) {
             throw new Error(webpackStats.toString({ colors }));
         } else if (webpackStats.hasWarnings()) {
-            console.warn(webpackStats.toString({ colors }));
+            //console.warn(webpackStats.toString({ colors }));
         }
         const app = express();
         app.use(devMiddleware);
