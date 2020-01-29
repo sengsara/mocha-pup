@@ -16,7 +16,8 @@
     "lint": "eslint . --ext .ts,.tsx -f codeframe",
     "typecheck": "tsc --noEmit",
     "mocha-pup": "node -r @ts-tools/node/r ./src/cli.ts",
-    "prepack": "yarn build"
+    "prepack": "yarn build",
+    "preinstall": "yarn install --ignore-scripts && yarn build"
   },
   "peerDependencies": {
     "mocha": ">=7",
